@@ -1,0 +1,284 @@
+diff --git a/Makefile b/Makefile
+index f544afb4..fe9221e1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -135,6 +135,7 @@ endif
+ # this list contains the standalone components
+ src :=  core/include/$(target)_config_pkg.sv                                         \
+         corev_apu/src/ariane.sv                                                      \
++        $(wildcard corev_apu/fpga/src/bayes/*.v)                                     \
+         $(wildcard corev_apu/bootrom/*.sv)                                           \
+         $(wildcard corev_apu/clint/*.sv)                                             \
+         $(wildcard corev_apu/fpga/src/axi2apb/src/*.sv)                              \
+diff --git a/corev_apu/fpga/src/ariane_peripherals_xilinx.sv b/corev_apu/fpga/src/ariane_peripherals_xilinx.sv
+index 164db20e..6d7b8d0f 100644
+--- a/corev_apu/fpga/src/ariane_peripherals_xilinx.sv
++++ b/corev_apu/fpga/src/ariane_peripherals_xilinx.sv
+@@ -22,6 +22,7 @@ module ariane_peripherals #(
+     parameter bit InclSPI      = 0,
+     parameter bit InclEthernet = 0,
+     parameter bit InclGPIO     = 0,
++    parameter bit InclBayes    = 1,
+     parameter bit InclTimer    = 1
+ ) (
+     input  logic       clk_i           , // Clock
+@@ -32,6 +33,7 @@ module ariane_peripherals #(
+     AXI_BUS.Slave      spi             ,
+     AXI_BUS.Slave      gpio            ,
+     AXI_BUS.Slave      ethernet        ,
++    AXI_BUS.Slave      bayes           ,
+     AXI_BUS.Slave      timer           ,
+     output logic [1:0] irq_o           ,
+     // UART
+@@ -832,4 +834,55 @@ module ariane_peripherals #(
+             .irq_o   ( irq_sources[6:3] )
+         );
+     end
++
++    // 7. Bayes
++    assign bayes.b_user = 1'b0;
++    assign bayes.r_user = 1'b0;
++    if (InclBayes) begin : gen_bayes
++        bayes_axi_full #(
++            .C_AXI_ID_WIDTH     ( AxiIdWidth   ),
++            .C_AXI_ADDR_WIDTH   ( AxiAddrWidth ),
++            .C_AXI_DATA_WIDTH   ( AxiDataWidth )
++        ) i_bayes_axi_full (
++            .S_AXI_ACLK    ( clk_i           ),
++            .S_AXI_ARESETN ( rst_ni          ),
++            .S_AXI_AWID    ( bayes.aw_id     ),
++            .S_AXI_AWADDR  ( bayes.aw_addr   ),
++            .S_AXI_AWLEN   ( bayes.aw_len    ),
++            .S_AXI_AWSIZE  ( bayes.aw_size   ),
++            .S_AXI_AWBURST ( bayes.aw_burst  ),
++            .S_AXI_AWLOCK  ( bayes.aw_lock   ),
++            .S_AXI_AWCACHE ( bayes.aw_cache  ),
++            .S_AXI_AWPROT  ( bayes.aw_prot   ),
++            .S_AXI_AWQOS   ( bayes.aw_qos    ),
++            .S_AXI_AWVALID ( bayes.aw_valid  ),
++            .S_AXI_AWREADY ( bayes.aw_ready  ),
++            .S_AXI_WDATA   ( bayes.w_data    ),
++            .S_AXI_WSTRB   ( bayes.w_strb    ),
++            .S_AXI_WLAST   ( bayes.w_last    ),
++            .S_AXI_WVALID  ( bayes.w_valid   ),
++            .S_AXI_WREADY  ( bayes.w_ready   ),
++            .S_AXI_BID     ( bayes.b_id      ),
++            .S_AXI_BRESP   ( bayes.b_resp    ),
++            .S_AXI_BVALID  ( bayes.b_valid   ),
++            .S_AXI_BREADY  ( bayes.b_ready   ),
++            .S_AXI_ARID    ( bayes.ar_id     ),
++            .S_AXI_ARADDR  ( bayes.ar_addr   ),
++            .S_AXI_ARLEN   ( bayes.ar_len    ),
++            .S_AXI_ARSIZE  ( bayes.ar_size   ),
++            .S_AXI_ARBURST ( bayes.ar_burst  ),
++            .S_AXI_ARLOCK  ( bayes.ar_lock   ),
++            .S_AXI_ARCACHE ( bayes.ar_cache  ),
++            .S_AXI_ARPROT  ( bayes.ar_prot   ),
++            .S_AXI_ARQOS   ( bayes.ar_qos    ),
++            .S_AXI_ARVALID ( bayes.ar_valid  ),
++            .S_AXI_ARREADY ( bayes.ar_ready  ),
++            .S_AXI_RID     ( bayes.r_id      ),
++            .S_AXI_RDATA   ( bayes.r_data    ),
++            .S_AXI_RRESP   ( bayes.r_resp    ),
++            .S_AXI_RLAST   ( bayes.r_last    ),
++            .S_AXI_RVALID  ( bayes.r_valid   ),
++            .S_AXI_RREADY  ( bayes.r_ready   )
++        );
++    end
+ endmodule
+diff --git a/corev_apu/fpga/src/ariane_xilinx.sv b/corev_apu/fpga/src/ariane_xilinx.sv
+index 9ccaab0a..64acc4aa 100644
+--- a/corev_apu/fpga/src/ariane_xilinx.sv
++++ b/corev_apu/fpga/src/ariane_xilinx.sv
+@@ -273,6 +273,7 @@ assign addr_map = '{
+   '{ idx: ariane_soc::SPI,      start_addr: ariane_soc::SPIBase,      end_addr: ariane_soc::SPIBase + ariane_soc::SPILength           },
+   '{ idx: ariane_soc::Ethernet, start_addr: ariane_soc::EthernetBase, end_addr: ariane_soc::EthernetBase + ariane_soc::EthernetLength },
+   '{ idx: ariane_soc::GPIO,     start_addr: ariane_soc::GPIOBase,     end_addr: ariane_soc::GPIOBase + ariane_soc::GPIOLength         },
++  '{ idx: ariane_soc::Bayes,    start_addr: ariane_soc::BayesBase,    end_addr: ariane_soc::BayesBase + ariane_soc::BayesLength       },
+   '{ idx: ariane_soc::DRAM,     start_addr: ariane_soc::DRAMBase,     end_addr: ariane_soc::DRAMBase + ariane_soc::DRAMLength         }
+ };
+ 
+@@ -801,6 +802,7 @@ ariane_peripherals #(
+     .AxiUserWidth ( AxiUserWidth     ),
+     .InclUART     ( 1'b1             ),
+     .InclGPIO     ( 1'b1             ),
++    .InclBayes    ( 1'b1             ),
+     `ifdef KINTEX7
+     .InclSPI      ( 1'b1         ),
+     .InclEthernet ( 1'b1         )
+@@ -824,6 +826,7 @@ ariane_peripherals #(
+     .gpio         ( master[ariane_soc::GPIO]     ),
+     .eth_clk_i    ( eth_clk                      ),
+     .ethernet     ( master[ariane_soc::Ethernet] ),
++    .bayes        ( master[ariane_soc::Bayes]    ),
+     .timer        ( master[ariane_soc::Timer]    ),
+     .irq_o        ( irq                          ),
+     .rx_i         ( rx                           ),
+diff --git a/corev_apu/tb/ariane_peripherals.sv b/corev_apu/tb/ariane_peripherals.sv
+index 9865af46..390eb297 100644
+--- a/corev_apu/tb/ariane_peripherals.sv
++++ b/corev_apu/tb/ariane_peripherals.sv
+@@ -21,6 +21,7 @@ module ariane_peripherals #(
+     parameter bit InclSPI      = 0,
+     parameter bit InclEthernet = 0,
+     parameter bit InclGPIO     = 0,
++    parameter bit InclBayes    = 1,
+     parameter bit InclTimer    = 1
+ ) (
+     input  logic       clk_i           , // Clock
+@@ -29,6 +30,7 @@ module ariane_peripherals #(
+     AXI_BUS.Slave      uart            ,
+     AXI_BUS.Slave      spi             ,
+     AXI_BUS.Slave      ethernet        ,
++    AXI_BUS.Slave      bayes           ,
+     AXI_BUS.Slave      timer           ,
+     output logic [1:0] irq_o           ,
+     // UART
+@@ -616,4 +618,57 @@ module ariane_peripherals #(
+             .irq_o   ( irq_sources[6:3] )
+         );
+     end
++
++    // ---------------
++    // 6. Bayes
++    // ---------------
++    assign bayes.b_user = 1'b0;
++    assign bayes.r_user = 1'b0;
++    if (InclBayes) begin : gen_bayes
++        bayes_axi_full #(
++            .C_AXI_ID_WIDTH     ( AxiIdWidth   ),
++            .C_AXI_ADDR_WIDTH   ( AxiAddrWidth ),
++            .C_AXI_DATA_WIDTH   ( AxiDataWidth )
++        ) i_bayes_axi_full (
++            .S_AXI_ACLK    ( clk_i           ),
++            .S_AXI_ARESETN ( rst_ni          ),
++            .S_AXI_AWID    ( bayes.aw_id     ),
++            .S_AXI_AWADDR  ( bayes.aw_addr   ),
++            .S_AXI_AWLEN   ( bayes.aw_len    ),
++            .S_AXI_AWSIZE  ( bayes.aw_size   ),
++            .S_AXI_AWBURST ( bayes.aw_burst  ),
++            .S_AXI_AWLOCK  ( bayes.aw_lock   ),
++            .S_AXI_AWCACHE ( bayes.aw_cache  ),
++            .S_AXI_AWPROT  ( bayes.aw_prot   ),
++            .S_AXI_AWQOS   ( bayes.aw_qos    ),
++            .S_AXI_AWVALID ( bayes.aw_valid  ),
++            .S_AXI_AWREADY ( bayes.aw_ready  ),
++            .S_AXI_WDATA   ( bayes.w_data    ),
++            .S_AXI_WSTRB   ( bayes.w_strb    ),
++            .S_AXI_WLAST   ( bayes.w_last    ),
++            .S_AXI_WVALID  ( bayes.w_valid   ),
++            .S_AXI_WREADY  ( bayes.w_ready   ),
++            .S_AXI_BID     ( bayes.b_id      ),
++            .S_AXI_BRESP   ( bayes.b_resp    ),
++            .S_AXI_BVALID  ( bayes.b_valid   ),
++            .S_AXI_BREADY  ( bayes.b_ready   ),
++            .S_AXI_ARID    ( bayes.ar_id     ),
++            .S_AXI_ARADDR  ( bayes.ar_addr   ),
++            .S_AXI_ARLEN   ( bayes.ar_len    ),
++            .S_AXI_ARSIZE  ( bayes.ar_size   ),
++            .S_AXI_ARBURST ( bayes.ar_burst  ),
++            .S_AXI_ARLOCK  ( bayes.ar_lock   ),
++            .S_AXI_ARCACHE ( bayes.ar_cache  ),
++            .S_AXI_ARPROT  ( bayes.ar_prot   ),
++            .S_AXI_ARQOS   ( bayes.ar_qos    ),
++            .S_AXI_ARVALID ( bayes.ar_valid  ),
++            .S_AXI_ARREADY ( bayes.ar_ready  ),
++            .S_AXI_RID     ( bayes.r_id      ),
++            .S_AXI_RDATA   ( bayes.r_data    ),
++            .S_AXI_RRESP   ( bayes.r_resp    ),
++            .S_AXI_RLAST   ( bayes.r_last    ),
++            .S_AXI_RVALID  ( bayes.r_valid   ),
++            .S_AXI_RREADY  ( bayes.r_ready   )
++        );
++    end
+ endmodule
+diff --git a/corev_apu/tb/ariane_soc_pkg.sv b/corev_apu/tb/ariane_soc_pkg.sv
+index eca485c7..0fd4a33a 100644
+--- a/corev_apu/tb/ariane_soc_pkg.sv
++++ b/corev_apu/tb/ariane_soc_pkg.sv
+@@ -25,15 +25,16 @@ package ariane_soc;
+ 
+   typedef enum int unsigned {
+     DRAM     = 0,
+-    GPIO     = 1,
+-    Ethernet = 2,
+-    SPI      = 3,
+-    Timer    = 4,
+-    UART     = 5,
+-    PLIC     = 6,
+-    CLINT    = 7,
+-    ROM      = 8,
+-    Debug    = 9
++    Bayes    = 1,
++    GPIO     = 2,
++    Ethernet = 3,
++    SPI      = 4,
++    Timer    = 5,
++    UART     = 6,
++    PLIC     = 7,
++    CLINT    = 8,
++    ROM      = 9,
++    Debug    = 10
+   } axi_slaves_t;
+ 
+   localparam NB_PERIPHERALS = Debug + 1;
+@@ -48,6 +49,7 @@ package ariane_soc;
+   localparam logic[63:0] SPILength      = 64'h800000;
+   localparam logic[63:0] EthernetLength = 64'h10000;
+   localparam logic[63:0] GPIOLength     = 64'h1000;
++  localparam logic[63:0] BayesLength    = 64'h1000;
+   localparam logic[63:0] DRAMLength     = 64'h40000000; // 1GByte of DDR (split between two chips on Genesys2)
+   localparam logic[63:0] SRAMLength     = 64'h1800000;  // 24 MByte of SRAM
+   // Instantiate AXI protocol checkers
+@@ -63,6 +65,7 @@ package ariane_soc;
+     SPIBase      = 64'h2000_0000,
+     EthernetBase = 64'h3000_0000,
+     GPIOBase     = 64'h4000_0000,
++    BayesBase    = 64'h5000_0000,
+     DRAMBase     = 64'h8000_0000
+   } soc_bus_start_t;
+ 
+diff --git a/corev_apu/tb/ariane_testharness.sv b/corev_apu/tb/ariane_testharness.sv
+index 4ed753aa..a4e1a101 100644
+--- a/corev_apu/tb/ariane_testharness.sv
++++ b/corev_apu/tb/ariane_testharness.sv
+@@ -351,7 +351,6 @@ module ariane_testharness #(
+   // ------------------------------
+ 
+   // GPIO not implemented, adding an error slave here
+-
+   ariane_axi_soc::req_slv_t  gpio_req;
+   ariane_axi_soc::resp_slv_t gpio_resp;
+   `AXI_ASSIGN_TO_REQ(gpio_req, master[ariane_soc::GPIO])
+@@ -368,7 +367,6 @@ module ariane_testharness #(
+     .slv_resp_o ( gpio_resp )
+   );
+ 
+-
+   // ------------------------------
+   // Memory + Exclusive Access
+   // ------------------------------
+@@ -483,6 +481,7 @@ module ariane_testharness #(
+     '{ idx: ariane_soc::SPI,      start_addr: ariane_soc::SPIBase,      end_addr: ariane_soc::SPIBase + ariane_soc::SPILength           },
+     '{ idx: ariane_soc::Ethernet, start_addr: ariane_soc::EthernetBase, end_addr: ariane_soc::EthernetBase + ariane_soc::EthernetLength },
+     '{ idx: ariane_soc::GPIO,     start_addr: ariane_soc::GPIOBase,     end_addr: ariane_soc::GPIOBase + ariane_soc::GPIOLength         },
++    '{ idx: ariane_soc::Bayes,    start_addr: ariane_soc::BayesBase,    end_addr: ariane_soc::BayesBase + ariane_soc::BayesLength       },
+     '{ idx: ariane_soc::DRAM,     start_addr: ariane_soc::DRAMBase,     end_addr: ariane_soc::DRAMBase + ariane_soc::DRAMLength         }
+   };
+ 
+@@ -567,6 +566,7 @@ module ariane_testharness #(
+ `else
+     .InclUART     ( 1'b0                     ),
+ `endif
++    .InclBayes    ( 1'b1                     ),
+     .InclSPI      ( 1'b0                     ),
+     .InclEthernet ( 1'b0                     )
+   ) i_ariane_peripherals (
+@@ -576,6 +576,7 @@ module ariane_testharness #(
+     .uart      ( master[ariane_soc::UART]     ),
+     .spi       ( master[ariane_soc::SPI]      ),
+     .ethernet  ( master[ariane_soc::Ethernet] ),
++    .bayes     ( master[ariane_soc::Bayes]    ),
+     .timer     ( master[ariane_soc::Timer]    ),
+     .irq_o     ( irqs                         ),
+     .rx_i      ( rx                           ),
